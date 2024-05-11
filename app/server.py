@@ -29,7 +29,9 @@ def format_chat_history(data):
   formatize_chat_history = ""
   if "chat_history" in data.keys():
     for message in data["chat_history"]:
-      formatize_chat_history += f"\t{str(type(message)).split("'")[1].split(".")[-1]}: {message.content.replace("\n", "")}\n"
+      message_type = str(type(message)).split("'")[1].split(".")[-1]
+      message_content = message.content.replace("\n", "")
+      formatize_chat_history += f"\t{message_type}: {message_content}\n"
     data["chat_history"] = formatize_chat_history
   return data
 
@@ -63,7 +65,7 @@ llm = ChatOpenAI(
 )
 
 # indexing
-embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-zh-v1.5", show_progress=True)
+embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-zh-v1.5")
 vectorstore = Chroma.from_documents(documents=pages, embedding=embeddings)
 
 # retriever
