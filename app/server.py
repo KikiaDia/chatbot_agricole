@@ -22,10 +22,15 @@ from meteostat import Stations
 from neuralprophet import NeuralProphet, set_log_level, load
 import pandas as pd
 import warnings
+from joblib import load
+from fastapi.requests import Request
 
 
 warnings.filterwarnings('ignore')
 set_log_level("ERROR")
+
+NON_CUSTOM_MODEL = load("models/non_custom_prediction_pipeline.joblib")
+CUSTOM_MODEL = load("models/custom_prediction_pipeline.joblib")
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -158,7 +163,7 @@ app.add_middleware(
 async def redirect_root_to_docs():
     return RedirectResponse("/docs")
 
-@app.get("/forecast_temperature")
+@app.get("/api/forecast_temperature")
 def predict_temperature(weather_data: WeatherData):
     try:
         # Extraction des données d'entrée
@@ -218,6 +223,36 @@ def predict_temperature(weather_data: WeatherData):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/yield-forecast/v1")
+async def on_message(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]]})
+      prediction = NON_CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }
+
+
+@app.post("/api/yield-forecast/v2")
+async def on_message(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]], "N": [body["N"]], "P": [body["P"]], "K": [body["K"]], "ph": [body["ph"]]})
+      prediction = CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }  
+
 
 
 # Edit this to add the chain you want to add
