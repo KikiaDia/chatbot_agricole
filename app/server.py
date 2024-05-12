@@ -24,6 +24,8 @@ import pandas as pd
 import warnings
 from joblib import load
 from fastapi.requests import Request
+from tensorflow.keras.models import load_model
+import numpy as np
 
 
 warnings.filterwarnings('ignore')
@@ -31,6 +33,8 @@ set_log_level("ERROR")
 
 NON_CUSTOM_MODEL = load("models/non_custom_prediction_pipeline.joblib")
 CUSTOM_MODEL = load("models/custom_prediction_pipeline.joblib")
+ENCODER = load("models/encoder.pkl")
+PRICE_MODEL = load_model("models/price_prediction.h5")
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -225,7 +229,7 @@ def predict_temperature(weather_data: WeatherData):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/yield-forecast/v1")
-async def on_message(request: Request):
+async def predict_yield_v1(request: Request):
     try:
       body = await request.json()
       series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]]})
@@ -240,7 +244,7 @@ async def on_message(request: Request):
 
 
 @app.post("/api/yield-forecast/v2")
-async def on_message(request: Request):
+async def predict_yield_v2(request: Request):
     try:
       body = await request.json()
       series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]], "N": [body["N"]], "P": [body["P"]], "K": [body["K"]], "ph": [body["ph"]]})
@@ -251,7 +255,31 @@ async def on_message(request: Request):
       return {
           "rendement": prediction[0],
           "status": "OK"
-      }  
+      }
+    
+@app.post("/api/price-forecast")
+async def predict_price(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({
+          "produits": [body["produit"]],
+          "regions": [body["region"]],
+          "mois": [body["mois"]],
+          "annee": [body["annee"]],
+          "prix/KG": [body["prix"]]
+      })
+      series[["produits", "regions"]] = ENCODER.transform(series[["produits","regions"]])
+      X = np.array(series.values, dtype=np.float32)
+      X = np.expand_dims(X, axis=1)
+      prediction = PRICE_MODEL.predict(X)[0][0]
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction,
+          "status": "OK"
+      }
+    
 
 
 
