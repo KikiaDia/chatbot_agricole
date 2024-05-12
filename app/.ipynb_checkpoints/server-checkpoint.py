@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from typing import List, Dict, Union
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from langserve import add_routes
 from langchain_community.document_loaders import PyPDFLoader
@@ -16,7 +17,27 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from meteostat import Stations
+from neuralprophet import NeuralProphet, set_log_level, load
+import pandas as pd
+import warnings
+from joblib import load
+from fastapi.requests import Request
+from tensorflow.keras.models import load_model
+from tensorflow.keras.losses import MeanAbsoluteError
+import numpy as np
+import json
 
+
+warnings.filterwarnings('ignore')
+set_log_level("ERROR")
+
+NON_CUSTOM_MODEL = load("app/models/non_custom_prediction_pipeline.joblib")
+CUSTOM_MODEL = load("app/models/custom_prediction_pipeline.joblib")
+ENCODER = load("app/models/encoder.pkl")
+# Charger le modèle en spécifiant l'initialiseur par défaut
+PRICE_MODEL = load_model("app/models/price_prediction.h5", custom_objects={'mae': MeanAbsoluteError()})
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -42,6 +63,12 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
     if session_id not in store:
         store[session_id] = ChatMessageHistory()
     return store[session_id]
+
+# Définition du modèle de données d'entrée pour le endpoint
+class WeatherData(BaseModel):
+    latitude: float
+    longitude: float
+    data: List[Dict[str, Union[str, float]]]
 
 # ingestion
 splitter = RecursiveCharacterTextSplitter(
@@ -143,6 +170,118 @@ app.add_middleware(
 async def redirect_root_to_docs():
     return RedirectResponse("/docs")
 
+@app.get("/api/forecast_temperature")
+def predict_temperature(weather_data: WeatherData):
+    try:
+        # Extraction des données d'entrée
+        latitude = weather_data.latitude
+        longitude = weather_data.longitude
+        data_list = weather_data.data
+
+        # Convert data_list to DataFrame
+        data = pd.DataFrame(data_list)
+
+        # Convert 'ds' column to datetime type
+        data['ds'] = pd.to_datetime(data['ds'])
+        
+        # Get nearby weather stations
+        stations = Stations()
+
+        station = stations.nearby(latitude, longitude)
+        station = stations.fetch().sort_values("distance").iloc[0]
+        
+        if station.country != "SN":
+            raise HTTPException(
+                status_code=400, 
+                detail="Cette zone n'est pas prise en charge par le modèle de prédiction."
+            )
+        
+        model_path = f"app/models/{station.wmo}.np"
+
+        # Initialisation du modèle NeuralProphet
+        model = NeuralProphet()
+
+        # Load le modèle
+        model = load(model_path)
+
+        # Préparation des données pour la prédiction
+        future = model.make_future_dataframe(data, periods=3)
+
+        # Prédiction des températures pour les 3 prochaines heures
+        forecast = model.predict(future)
+
+        # Filtrage des prédictions pour les 3 prochaines heures
+        forecast_next_3_hours = forecast.tail(3)
+        
+        # Récupération des timestamps des prédictions
+        timestamps = pd.to_datetime(forecast_next_3_hours['ds'].values)
+        
+        # Récupération des températures prédites
+        predicted_temperatures = forecast_next_3_hours['yhat1'].values.tolist()
+
+        # Création d'une liste de dictionnaires pour représenter les prédictions
+        predictions = [{"timestamp": ts.strftime('%Y-%m-%d %H:00:00').replace('T', ' '), "temperature": int(temp)} for ts, temp in zip(timestamps, predicted_temperatures)]
+
+        # Renvoi des prédictions de températures avec les timestamps
+        return {"predictions": predictions}
+    
+    except HTTPException as e:
+        raise e
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/yield-forecast/v1")
+async def predict_yield_v1(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]]})
+      prediction = NON_CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }
+
+
+@app.post("/api/yield-forecast/v2")
+async def predict_yield_v2(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]], "N": [body["N"]], "P": [body["P"]], "K": [body["K"]], "ph": [body["ph"]]})
+      prediction = CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }
+    
+@app.post("/api/price-forecast")
+async def predict_price(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({
+          "produits": [body["produit"]],
+          "regions": [body["region"]],
+          "mois": [body["mois"]],
+          "annee": [body["annee"]],
+          "prix/KG": [body["prix"]]
+      })
+      series[["produits", "regions"]] = ENCODER.transform(series[["produits","regions"]])
+      X = np.array(series.values, dtype=np.float32)
+      X = np.expand_dims(X, axis=1)
+      prediction = PRICE_MODEL.predict(X)[0][0]
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": float(prediction.astype(np.float64)),
+          "status": "OK"
+      }
 
 # Edit this to add the chain you want to add
 add_routes(app, conversational_rag_chain, path="/mbaykat")
