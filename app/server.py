@@ -24,11 +24,10 @@ import pandas as pd
 import warnings
 from joblib import load
 from fastapi.requests import Request
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.losses import MeanAbsoluteError
 import numpy as np
-import json
-
 
 warnings.filterwarnings('ignore')
 set_log_level("ERROR")
@@ -36,8 +35,8 @@ set_log_level("ERROR")
 NON_CUSTOM_MODEL = load("app/models/non_custom_prediction_pipeline.joblib")
 CUSTOM_MODEL = load("app/models/custom_prediction_pipeline.joblib")
 ENCODER = load("app/models/encoder.pkl")
-# Charger le modèle en spécifiant l'initialiseur par défaut
 PRICE_MODEL = load_model("app/models/price_prediction.h5", custom_objects={'mae': MeanAbsoluteError()})
+DISEASE_MODEL = load_model("/app/models/cnn_model_save.h5")
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -153,6 +152,26 @@ conversational_rag_chain = RunnableWithMessageHistory(
     input_messages_key="input",
     history_messages_key="chat_history",
 )
+
+CLASS_NAME_DISEASE = [
+  'Tomato___Bacterial_spot',
+ 'Tomato___Early_blight',
+ 'Tomato___Late_blight',
+ 'Tomato___Leaf_Mold',
+ 'Tomato___Septoria_leaf_spot',
+ 'Tomato___Spider_mites Two-spotted_spider_mite',
+ 'Tomato___Target_Spot',
+ 'Tomato___Tomato_Yellow_Leaf_Curl_Virus',
+ 'Tomato___Tomato_mosaic_virus',
+ 'Tomato___healthy'
+]
+
+def predict(model, img):
+  img_array = tf.keras.preprocessing.image.img_to_array(img)
+  img_array = tf.expand_dims(img_array, 0)
+  predictions = model.predict(img_array)
+  predicted_class = CLASS_NAME_DISEASE[np.argmax(predictions[0])]
+  return predicted_class
 
 app = FastAPI()
 
@@ -279,8 +298,27 @@ async def predict_price(request: Request):
       return HTTPException(status_code=500, detail=repr(e))
     else:
       return {
-          "rendement": float(prediction.astype(np.float64)),
+          "prix": float(prediction.astype(np.float64)),
           "status": "OK"
+      }
+    
+@app.post('/api/disease')
+async def get_disease(request: Request):
+    form = await request.form()
+    file_content = await form.get("file").read()
+    try:
+        img = tf.image.decode_image(file_content)
+        predicted_class = predict(DISEASE_MODEL, img.numpy())
+    except Exception as e:
+        return HTTPException(status_code=500, detail={"error", repr(e)})
+    else:
+      if predicted_class == "Tomato___healthy":
+        result = "Healthy"
+      else:
+        result = "Diseased"
+      return {
+        "status": "OK",
+        "result": result
       }
 
 # Edit this to add the chain you want to add
