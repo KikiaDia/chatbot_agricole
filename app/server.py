@@ -25,16 +25,19 @@ import warnings
 from joblib import load
 from fastapi.requests import Request
 from tensorflow.keras.models import load_model
+from tensorflow.keras.losses import MeanAbsoluteError
 import numpy as np
+import json
 
 
 warnings.filterwarnings('ignore')
 set_log_level("ERROR")
 
-NON_CUSTOM_MODEL = load("models/non_custom_prediction_pipeline.joblib")
-CUSTOM_MODEL = load("models/custom_prediction_pipeline.joblib")
-ENCODER = load("models/encoder.pkl")
-PRICE_MODEL = load_model("models/price_prediction.h5")
+NON_CUSTOM_MODEL = load("app/models/non_custom_prediction_pipeline.joblib")
+CUSTOM_MODEL = load("app/models/custom_prediction_pipeline.joblib")
+ENCODER = load("app/models/encoder.pkl")
+# Charger le modèle en spécifiant l'initialiseur par défaut
+PRICE_MODEL = load_model("app/models/price_prediction.h5", custom_objects={'mae': MeanAbsoluteError()})
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -276,12 +279,9 @@ async def predict_price(request: Request):
       return HTTPException(status_code=500, detail=repr(e))
     else:
       return {
-          "rendement": prediction,
+          "rendement": float(prediction.astype(np.float64)),
           "status": "OK"
       }
-    
-
-
 
 # Edit this to add the chain you want to add
 add_routes(app, conversational_rag_chain, path="/mbaykat")

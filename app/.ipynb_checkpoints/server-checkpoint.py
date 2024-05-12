@@ -22,10 +22,22 @@ from meteostat import Stations
 from neuralprophet import NeuralProphet, set_log_level, load
 import pandas as pd
 import warnings
+from joblib import load
+from fastapi.requests import Request
+from tensorflow.keras.models import load_model
+from tensorflow.keras.losses import MeanAbsoluteError
+import numpy as np
+import json
 
 
 warnings.filterwarnings('ignore')
 set_log_level("ERROR")
+
+NON_CUSTOM_MODEL = load("app/models/non_custom_prediction_pipeline.joblib")
+CUSTOM_MODEL = load("app/models/custom_prediction_pipeline.joblib")
+ENCODER = load("app/models/encoder.pkl")
+# Charger le modèle en spécifiant l'initialiseur par défaut
+PRICE_MODEL = load_model("app/models/price_prediction.h5", custom_objects={'mae': MeanAbsoluteError()})
 
 # function 
 def format_docs(inputs: dict) -> str:
@@ -158,7 +170,7 @@ app.add_middleware(
 async def redirect_root_to_docs():
     return RedirectResponse("/docs")
 
-@app.get("/forecast_temperature")
+@app.get("/api/forecast_temperature")
 def predict_temperature(weather_data: WeatherData):
     try:
         # Extraction des données d'entrée
@@ -219,6 +231,57 @@ def predict_temperature(weather_data: WeatherData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/yield-forecast/v1")
+async def predict_yield_v1(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]]})
+      prediction = NON_CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }
+
+
+@app.post("/api/yield-forecast/v2")
+async def predict_yield_v2(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({"culture": [body["culture"]], "humidity": [body["humidity"]], "region": [body["region"]], "superficie": [body["superficie"]], "temp": [body["temp"]], "rainfall": [body["rainfall"]], "wind": [body["wind"]], "N": [body["N"]], "P": [body["P"]], "K": [body["K"]], "ph": [body["ph"]]})
+      prediction = CUSTOM_MODEL.predict(series)
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": prediction[0],
+          "status": "OK"
+      }
+    
+@app.post("/api/price-forecast")
+async def predict_price(request: Request):
+    try:
+      body = await request.json()
+      series = pd.DataFrame({
+          "produits": [body["produit"]],
+          "regions": [body["region"]],
+          "mois": [body["mois"]],
+          "annee": [body["annee"]],
+          "prix/KG": [body["prix"]]
+      })
+      series[["produits", "regions"]] = ENCODER.transform(series[["produits","regions"]])
+      X = np.array(series.values, dtype=np.float32)
+      X = np.expand_dims(X, axis=1)
+      prediction = PRICE_MODEL.predict(X)[0][0]
+    except Exception as e:
+      return HTTPException(status_code=500, detail=repr(e))
+    else:
+      return {
+          "rendement": float(prediction.astype(np.float64)),
+          "status": "OK"
+      }
 
 # Edit this to add the chain you want to add
 add_routes(app, conversational_rag_chain, path="/mbaykat")
